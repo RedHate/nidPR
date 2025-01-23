@@ -37,7 +37,6 @@
 #include <stdio.h>
 #include <string.h>
 //extras
-#include "headers/screenshot.h"
 #include "float/float.h"
 #include "mips/mips.h"
 #include "sha1/sha1.h"
@@ -60,12 +59,14 @@ unsigned int menudepth = 0;
 unsigned int menutab   = 0;
 unsigned int menudrawn = 0;
 
-#define MOD_DISPLAY_LINES 28
+#define MOD_DISPLAY_LINES 27
 #define MOD_LIST_MAX 256
+
+/* remnant buffer bug in this being global bad news bearS! SCOPE IT*/
 SceUID mod_list[MOD_LIST_MAX];
 unsigned int mod_select = 0;
 unsigned int mod_scroll = 0;
-unsigned int mod_count = 0;
+int mod_count = 0;
 SceUID selected_modid = 0;
 
 #define STUB_DISPLAY_LINES 20
@@ -74,17 +75,15 @@ unsigned int stub_scroll = 0;
 unsigned int stub_count = 0;
 unsigned int stub_addr_select = 0;
 
-#define THREAD_DISPLAY_LINES 29
+#define THREAD_DISPLAY_LINES 27
 #define MAX_THREAD 128
-static int thread_count_start, 
-		   thread_count_now;
 
 unsigned int thread_select=0;
 unsigned int thread_scroll=0;
 unsigned int thread_edit=0;
 SceUID selected_thid;
 
-#define DECODE_DISPLAY_LINES 27
+#define DECODE_DISPLAY_LINES 26
 unsigned int flip1 = 0;
 unsigned int DecodeOptions = 0;
 unsigned int DecodeAddress=0x08800000;
@@ -101,9 +100,8 @@ char RamViewMode = 0;
 
 unsigned int t_addr[3]={0x00000000,0x00000000,0x00000000};
 
-SceUID thread_buf_start[MAX_THREAD], thread_buf_now[MAX_THREAD];
-
 unsigned int MenuEnableKey  = PSP_CTRL_VOLUP | PSP_CTRL_VOLDOWN;
+unsigned int PatchEnableKey=PSP_CTRL_NOTE;
 
 unsigned int module_start(SceSize args, void *argp) __attribute__((alias("_start")));
 unsigned int  module_stop(SceSize args, void *argp) __attribute__((alias("_stop")));
@@ -112,10 +110,12 @@ SceUID PauseUID = -1;
 
 char thread_paused[MAX_THREAD]; //used to keep track of pausing independent threads
 
-SceKernelThreadInfo status[MAX_THREAD];
-
 SceKernelThreadInfo* fetchThreadInfo(){
 
+	static SceKernelThreadInfo status[MAX_THREAD];
+
+	int thread_count_now;
+	SceUID thread_buf_now[MAX_THREAD];
 	sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread, thread_buf_now, MAX_THREAD, &thread_count_now);
 	//SceKernelThreadInfo *status = malloc(sizeof(SceKernelThreadInfo) * MAX_THREAD);
 	
@@ -130,6 +130,9 @@ SceKernelThreadInfo* fetchThreadInfo(){
 	return status;
 }
 
+
+/* quick hacky patching */
+
 #define MAX_PATCHES 64
 
 typedef struct patch{
@@ -138,7 +141,7 @@ typedef struct patch{
 }patch;
 
 #define PATCH_DISPLAY_LINES 25
-char patchEnable = 0;
+char patch_enable = 0;
 char patch_count = 0;
 char patch_select = 0;
 char patch_scroll = 0;
@@ -149,7 +152,7 @@ int patchThread(){
 	//while the thread is running
 	while(running){
 		//if we have enabled patching
-		if(patchEnable){
+		if(patch_enable){
 			//loop through the stored addresses and insert the data to memory
 			int x;
 			for(x=0;x<patch_count;x++){
@@ -160,7 +163,7 @@ int patchThread(){
 				}
 			}
 		}
-		//delay the thread so we dont hog up the cpu
+		//delay the thread at a speed of 30hz so we dont hog up the cpu
 		sceKernelDelayThread(T_SECOND/30);
 	}
 	
@@ -169,8 +172,10 @@ int patchThread(){
 }
 
 int load_patches(){
+	//open the dat
 	signed fd=sceIoOpen("ms0:/patch.dat", PSP_O_RDONLY, 0777);
 	if(fd > 0){
+		//read it and close it
 		unsigned int file_size = sceIoLseek(fd, 0, SEEK_END); sceIoLseek(fd, 0, SEEK_SET);
 		unsigned int len = (file_size/sizeof(patch));
 		unsigned int bytes_read = sceIoRead(fd, patch_list, len);
@@ -181,8 +186,10 @@ int load_patches(){
 }
 
 int save_patches(){
+	//open the dat
 	signed fd=sceIoOpen("ms0:/patch.dat", PSP_O_WRONLY | PSP_O_CREAT, 0777);
 	if(fd > 0){
+		//write it and close it
 		unsigned int bytes_read = sceIoWrite(fd, patch_list, sizeof(patch)*256);
 		sceIoClose(fd);
 		return 1;
@@ -192,24 +199,29 @@ int save_patches(){
 
 int add_to_patches(unsigned int addr, unsigned int data){
 	
-	if(patch_count >= 256) return 2;
+	//check boundaries
 	if(addr == 0) return 1;
+	if(patch_count >= MAX_PATCHES) return 2;
 	
+	//assignment
 	patch_list[patch_count].addr = addr;
 	patch_list[patch_count].data = data;
 	
+	//mutation
 	patch_count++;
 	
 	return 0;
 }
 
+//create the list of nid hashes for the existing prototypes
 void HashNidListPrototypes(){
-	//loop through the nids matching prototypes to nids
+	//loop through the nids
 	unsigned int y;
 	for(y=0;y<NID_LIST_SIZE-1;y++){
 		//hash the prototype name to get the nid
 		unsigned char hash[20];
 		SHA1((const char*) nid_list[y].label, strlen(nid_list[y].label), hash);
+		//assign it to the structured array
 		nid_list[y].data = *(unsigned int*) hash;
 	}
 }
@@ -337,7 +349,7 @@ unsigned int moduleStopUnload(SceUID uid, int flags, int type){
 
 }
 
-
+int real_module_count=0;
 #include <pspsysmem.h>
 #include <pspsysmem_kernel.h>
 void MenuUpdate(){
@@ -357,8 +369,6 @@ void MenuUpdate(){
 	pspDebugScreenSetTextColor(CYAN); pspDebugScreenPuts("\r\n-------------------------------------------------------------------\r\n");
 	pspDebugScreenSetTextColor(WHITE);
 
-
-	
 	if(menutab == 0){ //module
 		
 		sceKernelGetModuleIdList(mod_list, MOD_LIST_MAX, &mod_count);
@@ -366,17 +376,22 @@ void MenuUpdate(){
 			
 			char buffer[256];
 			
+			//sprintf(buffer, "mod count: %d\r\n", mod_count);
+			//pspDebugScreenPuts(buffer);
+			
 			pspDebugScreenSetTextColor(YELLOW);
 			pspDebugScreenPuts(" UID       ATTR  VER    NAME\r\n");
 			
 			unsigned int x;
 			for(x=0;x<MOD_DISPLAY_LINES;x++){ //limit line count
 				//find the module by UID
-				if(&mod_list[x+mod_scroll] != NULL){
-					SceModule* modP = sceKernelFindModuleByUID(mod_list[x+mod_scroll]); //replace x with select 
-					if (modP != NULL){
-						if(modP->ent_top != NULL){
-							if(modP->modname != NULL){
+				if(mod_list[x+mod_scroll] != 0){
+					SceModule* modP = sceKernelFindModuleByUID(mod_list[x+mod_scroll]); //replace x with select
+					unsigned char id = *(unsigned char*)(&modP->unknown2);
+					if(id == 0) break; //check the module id in the list
+					if (modP != 0){
+						if(modP->ent_top != 0){
+							if(modP->modname != 0){
 								if(mod_select == x) pspDebugScreenSetTextColor(MAGENTA);
 								else pspDebugScreenSetTextColor(WHITE);
 								sprintf(buffer, " %08X", 	(unsigned int)modP->modid); pspDebugScreenPuts(buffer);
@@ -391,6 +406,13 @@ void MenuUpdate(){
 					}
 				}
 			}
+		
+			//footer
+			pspDebugScreenSetXY(0,31);
+			pspDebugScreenSetTextColor(CYAN); pspDebugScreenPuts("-------------------------------------------------------------------\r\n"); pspDebugScreenSetTextColor(WHITE);
+			pspDebugScreenSetTextColor(GRAY);
+			pspDebugScreenPuts(" (X) Stubs (Start) Info (O) Close Menu");
+		
 		}
 		else if (menudepth == 1){ //stub viewer with cross
 			char buffer[256];
@@ -445,6 +467,11 @@ void MenuUpdate(){
 					}
 				}
 			}
+			//footer
+			pspDebugScreenSetXY(0,31);
+			pspDebugScreenSetTextColor(CYAN); pspDebugScreenPuts("-------------------------------------------------------------------\r\n"); pspDebugScreenSetTextColor(WHITE);
+			pspDebugScreenSetTextColor(GRAY);
+			pspDebugScreenPuts(" (X) Hop-to Decoder (/\\) Search Prototype (O) Back");
 		}
 		else if (menudepth == 9999){ //module info with triangle (this is shitty, i think we can do this better with my next test below)...
 			
@@ -566,7 +593,11 @@ void MenuUpdate(){
 					}
 				}
 			}
-		
+			//footer
+			pspDebugScreenSetXY(0,31);
+			pspDebugScreenSetTextColor(CYAN); pspDebugScreenPuts("-------------------------------------------------------------------\r\n"); pspDebugScreenSetTextColor(WHITE);
+			pspDebugScreenSetTextColor(GRAY);
+			pspDebugScreenPuts(" (O) Back");
 		
 		}
 	}
@@ -580,15 +611,21 @@ void MenuUpdate(){
 			//update the thread info
 			SceKernelThreadInfo *threadInfo = (SceKernelThreadInfo*)fetchThreadInfo();
 			if(threadInfo != NULL){
+				
+				int thread_count_now;
+				SceUID thread_buf_now[MAX_THREAD];
 				sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread, thread_buf_now, MAX_THREAD, &thread_count_now);
+				
 				//loop it
 				int x;
-				for(x = 0; x < thread_count_now; x++){ //fix t his add scroll
+				for(x = 0; x < THREAD_DISPLAY_LINES; x++){ //fix t his add scroll
+					
+					if(x > thread_count_now-1) break;
 					
 					//if selected
-					if(thread_select+thread_scroll == x){ 
-						selected_thid=thread_buf_now[x];
-						t_addr[1]=(unsigned int)threadInfo[x].entry;
+					if(thread_select == x){ 
+						selected_thid=thread_buf_now[x+thread_scroll];
+						t_addr[1]=(unsigned int)threadInfo[x+thread_scroll].entry;
 						pspDebugScreenSetTextColor(MAGENTA); 
 					}
 					//not selected
@@ -600,7 +637,7 @@ void MenuUpdate(){
 					if(thread_paused[x]){ 
 						
 						//if selected
-						if(thread_select+thread_scroll == x){ 
+						if(thread_select == x){ 
 							pspDebugScreenSetBackColor(MAGENTA);
 						}
 						//not selected
@@ -613,24 +650,32 @@ void MenuUpdate(){
 					}
 					
 					//print it out
-					if(&thread_buf_now[x] != NULL){
-						sprintf(buffer, " %08X",      thread_buf_now[x]);		      pspDebugScreenPuts(buffer);
-						sprintf(buffer, "  %30s",     threadInfo[x].name);			  pspDebugScreenPuts(buffer);
-						sprintf(buffer, "  0x%08X",   threadInfo[x].entry); 		  pspDebugScreenPuts(buffer);
-						//sprintf(buffer, "  %08X",   threadInfo[x].stack);		      pspDebugScreenPuts(buffer);
-						sprintf(buffer, "  %d",       threadInfo[x].currentPriority); pspDebugScreenPuts(buffer);
+					if(thread_buf_now[x+thread_scroll] != 0){
+						sprintf(buffer, " %08X",      thread_buf_now[x+thread_scroll]);		      pspDebugScreenPuts(buffer);
+						sprintf(buffer, "  %30s",     threadInfo[x+thread_scroll].name);			  pspDebugScreenPuts(buffer);
+						sprintf(buffer, "  0x%08X",   threadInfo[x+thread_scroll].entry); 		  pspDebugScreenPuts(buffer);
+						//sprintf(buffer, "  %08X",   threadInfo[x+thread_scroll].stack);		      pspDebugScreenPuts(buffer);
+						sprintf(buffer, "  %d",       threadInfo[x+thread_scroll].currentPriority); pspDebugScreenPuts(buffer);
 						pspDebugScreenSetBackColor(BLACK);
 						pspDebugScreenPuts("\r\n");
 					}
 					
 				}
 			}
+			//footer
+			pspDebugScreenSetXY(0,31);
+			pspDebugScreenSetTextColor(CYAN); pspDebugScreenPuts("-------------------------------------------------------------------\r\n"); pspDebugScreenSetTextColor(WHITE);
+			pspDebugScreenSetTextColor(GRAY);
+			pspDebugScreenPuts(" (X) Pause / Resume Thread (/\\) Kill Thread (O) Close Menu");
 		}
 		else if(menudepth == 1){
 			
 			char buffer[256];
 			
+			int thread_count_now;
+			SceUID thread_buf_now[MAX_THREAD];
 			sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread, thread_buf_now, MAX_THREAD, &thread_count_now);
+			
 			int x;
 			for(x = 0; x < thread_count_now; x++){
 				if(x == thread_select){
@@ -657,6 +702,13 @@ void MenuUpdate(){
 					}
 				}
 			}
+		
+			//footer
+			pspDebugScreenSetXY(0,31);
+			pspDebugScreenSetTextColor(CYAN); pspDebugScreenPuts("-------------------------------------------------------------------\r\n"); pspDebugScreenSetTextColor(WHITE);
+			pspDebugScreenSetTextColor(GRAY);
+			pspDebugScreenPuts(" (O) Back");
+		
 		}
 	}
 	else if(menutab == 2){ //browser
@@ -701,12 +753,12 @@ void MenuUpdate(){
 			}
 			else if(DecodeOptions == 1){
 				//Print out the ASCII
-				buffer[0]=*((unsigned char*)(((unsigned int)DecodeAddress+(i*4))+0)); if((buffer[0]<=0x20) || (buffer[0]==0xFF)) buffer[0]='.';
-				buffer[1]=*((unsigned char*)(((unsigned int)DecodeAddress+(i*4))+1)); if((buffer[1]<=0x20) || (buffer[1]==0xFF)) buffer[1]='.';
-				buffer[2]=*((unsigned char*)(((unsigned int)DecodeAddress+(i*4))+2)); if((buffer[2]<=0x20) || (buffer[2]==0xFF)) buffer[2]='.';
-				buffer[3]=*((unsigned char*)(((unsigned int)DecodeAddress+(i*4))+3)); if((buffer[3]<=0x20) || (buffer[3]==0xFF)) buffer[3]='.';
-				buffer[4]=0;
-				pspDebugScreenPuts(buffer);							
+				int x;
+				for(x=0;x<4;x++){
+					buffer[x]=*((unsigned char*)(((unsigned int)DecodeAddress+(i*4))+x)); if((buffer[x]<=0x20) || (buffer[x]==0xFF)) buffer[x]='.';
+				}
+				buffer[x]=0;
+				pspDebugScreenPuts(buffer);					
 				
 				//Print out the decimal
 				sprintf(buffer, "  %010lu  ", *((unsigned int*)(DecodeAddress+(i*4))));
@@ -764,11 +816,17 @@ void MenuUpdate(){
 		
 		}
 		
+		//footer
+		pspDebugScreenSetXY(0,31);
+		pspDebugScreenSetTextColor(CYAN); pspDebugScreenPuts("-------------------------------------------------------------------\r\n"); pspDebugScreenSetTextColor(WHITE);
+		pspDebugScreenSetTextColor(GRAY);
+		pspDebugScreenPuts(" (X) Edit ([]) Shift Up/Down (/\\) Add To Patch (O) Close Menu");
+
 	}
 	else if(menutab == 3){ //patches
 		
 		char buffer[256];
-		sprintf(buffer, (patchEnable)? "  Patch Count: %d\r\n  Patcher Enabled\r\n\r\n" : "  Patch Count: %d\r\n  Patcher Disabled\r\n\r\n", patch_count); pspDebugScreenPuts(buffer);
+		sprintf(buffer, (patch_enable)? "  Patch Count: %d\r\n  Patcher Enabled\r\n\r\n" : "  Patch Count: %d\r\n  Patcher Disabled\r\n\r\n", patch_count); pspDebugScreenPuts(buffer);
 		pspDebugScreenSetTextColor(YELLOW); 
 		if(DecodeOptions == 0){
 			pspDebugScreenSetTextColor(YELLOW); pspDebugScreenPuts(" ADDRESS     HEX       OPCODE   ARGS\r\n");
@@ -795,11 +853,11 @@ void MenuUpdate(){
 				else if(DecodeOptions == 1){
 					
 					//Print out the ASCII
-					buffer[0]=*((unsigned char*)(((unsigned int)&patch_list[i+patch_scroll].data)+0)); if((buffer[0]<=0x20) || (buffer[0]==0xFF)) buffer[0]='.';
-					buffer[1]=*((unsigned char*)(((unsigned int)&patch_list[i+patch_scroll].data)+1)); if((buffer[1]<=0x20) || (buffer[1]==0xFF)) buffer[1]='.';
-					buffer[2]=*((unsigned char*)(((unsigned int)&patch_list[i+patch_scroll].data)+2)); if((buffer[2]<=0x20) || (buffer[2]==0xFF)) buffer[2]='.';
-					buffer[3]=*((unsigned char*)(((unsigned int)&patch_list[i+patch_scroll].data)+3)); if((buffer[3]<=0x20) || (buffer[3]==0xFF)) buffer[3]='.';
-					buffer[4]=0;
+					int x;
+					for(x=0;x<4;x++){
+						buffer[x]=*((unsigned char*)(((unsigned int)&patch_list[i+patch_scroll].data)+x)); if((buffer[x]<=0x20) || (buffer[x]==0xFF)) buffer[x]='.';
+					}
+					buffer[x]=0;
 					pspDebugScreenPuts(buffer);
 					
 					//Print out the decimal
@@ -829,6 +887,12 @@ void MenuUpdate(){
 			}
 		}
 		
+		//footer
+		pspDebugScreenSetXY(0,31);
+		pspDebugScreenSetTextColor(CYAN); pspDebugScreenPuts("-------------------------------------------------------------------\r\n"); pspDebugScreenSetTextColor(WHITE);
+		pspDebugScreenSetTextColor(GRAY);
+		pspDebugScreenPuts(" (O) Close Menu");
+		
 	}
 	else if(menutab == 4){
 		char a_buffer[64];
@@ -846,26 +910,31 @@ void MenuUpdate(){
 		sprintf(a_buffer, "free %d size %d startaddr %08X memsize %d attr %08X\r\n",  info.size, info.startaddr, info.memsize, info.attr);
 		pspDebugScreenPuts(a_buffer);
 */
-
+		
 		int i;
 		for(i=1;i<=6;i++){
 			unsigned int free = sceKernelPartitionTotalFreeMemSize(i);
-			
 			sprintf(a_buffer, "partid %d free %d\r\n", i, free);
 			pspDebugScreenPuts(a_buffer);
 		}
+		
+		//footer
+		pspDebugScreenSetXY(0,31);
+		pspDebugScreenSetTextColor(CYAN); pspDebugScreenPuts("-------------------------------------------------------------------\r\n"); pspDebugScreenSetTextColor(WHITE);
+		pspDebugScreenSetTextColor(GRAY);
+		pspDebugScreenPuts(" (O) Close Menu");
+		
 	}
-	//footer
-	pspDebugScreenSetTextColor(CYAN); pspDebugScreenPuts("-------------------------------------------------------------------\r\n"); pspDebugScreenSetTextColor(WHITE);
+	
 	if(menutab == 2){
 		if(RamViewMode == 0){
-			pspDebugScreenSetTextColor(MAGENTA); pspDebugScreenPuts("  USER MEMORY ");
+			pspDebugScreenSetTextColor(MAGENTA); pspDebugScreenPuts("\r\n USER MEMORY ");
 		}
 		if(RamViewMode == 1){
-			pspDebugScreenSetTextColor(YELLOW); pspDebugScreenPuts("  KERNEL MEMORY ");
+			pspDebugScreenSetTextColor(YELLOW); pspDebugScreenPuts("\r\n KERNEL MEMORY ");
 		}
 		if(RamViewMode == 2){
-			pspDebugScreenSetTextColor(CYAN); pspDebugScreenPuts("  VISUAL MEMORY ");
+			pspDebugScreenSetTextColor(CYAN); pspDebugScreenPuts("\r\n VISUAL MEMORY ");
 		}
 	}
 
@@ -992,6 +1061,16 @@ void MenuControls(){
 			if(menudepth == 0){
 			
 				if(input.Buttons & PSP_CTRL_UP){
+					sceKernelGetModuleIdList(mod_list, MOD_LIST_MAX, &mod_count);
+					unsigned int x;
+					for(x=0;x<mod_count;x++){
+						//find the module by UID
+						if(mod_list[x+mod_scroll] != 0){
+							SceModule* modP = sceKernelFindModuleByUID(mod_list[x+mod_scroll]); //replace x with select
+							unsigned char id = *(unsigned char*)(&modP->unknown2);
+							if(id > real_module_count) real_module_count=id;
+						}
+					}
 					if(mod_select > 0){
 						mod_select--;
 					}
@@ -1005,19 +1084,39 @@ void MenuControls(){
 				}
 				
 				if(input.Buttons & PSP_CTRL_DOWN){
-					if((mod_select < mod_count-1) && (mod_select < MOD_DISPLAY_LINES-1)){
+					unsigned int x;
+					for(x=0;x<mod_count;x++){
+						//find the module by UID
+						if(mod_list[x+mod_scroll] != 0){
+							SceModule* modP = sceKernelFindModuleByUID(mod_list[x+mod_scroll]); //replace x with select
+							unsigned char id = *(unsigned char*)(&modP->unknown2);
+							if(id > real_module_count) real_module_count=id;
+						}
+					}
+					sceKernelGetModuleIdList(mod_list, MOD_LIST_MAX, &mod_count);
+					if((mod_select < real_module_count-1) && (mod_select < MOD_DISPLAY_LINES-1)){
 						mod_select++;
 					}
 					else if(mod_select == MOD_DISPLAY_LINES-1){ 
-						if(mod_scroll < mod_count-MOD_DISPLAY_LINES){
+						if(mod_scroll < real_module_count-MOD_DISPLAY_LINES-1){
 							mod_scroll++; 
 						}
 					}
 					MenuUpdate();
 					sceKernelDelayThread(T_SECOND/10);
 				}
-				
+			
 				if(input.Buttons & PSP_CTRL_LEFT){
+					unsigned int x;
+					for(x=0;x<mod_count;x++){
+						//find the module by UID
+						if(mod_list[x+mod_scroll] != 0){
+							SceModule* modP = sceKernelFindModuleByUID(mod_list[x+mod_scroll]); //replace x with select
+							unsigned char id = *(unsigned char*)(&modP->unknown2);
+							if(id > real_module_count) real_module_count=id;
+						}
+					}
+					sceKernelGetModuleIdList(mod_list, MOD_LIST_MAX, &mod_count);
 					if(mod_select > 0){
 						mod_select--;
 					}
@@ -1031,18 +1130,28 @@ void MenuControls(){
 				}
 				
 				if(input.Buttons & PSP_CTRL_RIGHT){
-					if((mod_select < mod_count-1) && (mod_select < MOD_DISPLAY_LINES-1)){
+					unsigned int x;
+					for(x=0;x<mod_count;x++){
+						//find the module by UID
+						if(mod_list[x+mod_scroll] != 0){
+							SceModule* modP = sceKernelFindModuleByUID(mod_list[x+mod_scroll]); //replace x with select
+							unsigned char id = *(unsigned char*)(&modP->unknown2);
+							if(id > real_module_count) real_module_count=id;
+						}
+					}
+					sceKernelGetModuleIdList(mod_list, MOD_LIST_MAX, &mod_count);
+					if((mod_select < real_module_count-1) && (mod_select < MOD_DISPLAY_LINES-1)){
 						mod_select++;
 					}
 					else if(mod_select == MOD_DISPLAY_LINES-1){ 
-						if(mod_scroll < mod_count-MOD_DISPLAY_LINES){
+						if(mod_scroll < real_module_count-MOD_DISPLAY_LINES-1){
 							mod_scroll++; 
 						}
 					}
 					MenuUpdate();
 					sceKernelDelayThread(T_SECOND/120);
 				}
-				
+
 				if (input.Buttons & PSP_CTRL_CROSS){
 					menudepth = 1;
 					MenuUpdate();
@@ -1184,9 +1293,7 @@ void MenuControls(){
 											if(nidtable[i] == hash_val){
 												pspDebugScreenSetTextColor(YELLOW);
 												char buffer[128];
-												sprintf(buffer, " YAR! CAUGHT ME A MARLIN! \"%s\" %08X", kbbuffer, hash_val); pspDebugScreenPuts(buffer);
-												pspDebugScreenSetTextColor(WHITE);
-												pspDebugScreenPuts("\r\n");
+												sprintf(buffer, "\r\n YAR! CAUGHT ME A MARLIN! \"%s\" %08X", kbbuffer, hash_val); pspDebugScreenPuts(buffer);
 											}
 
 										}
@@ -1249,15 +1356,16 @@ void MenuControls(){
 		else if(menutab == 1){
 			if(menudepth == 0){
 				
+				int thread_count_now;
+				SceUID thread_buf_now[MAX_THREAD];
+				
 				if(input.Buttons & PSP_CTRL_CROSS){
 					//pause resume thread
 					sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread, thread_buf_now, MAX_THREAD, &thread_count_now);
 					if(!thread_paused[thread_select+thread_scroll]){
-						sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread, thread_buf_now, MAX_THREAD, &thread_count_now);
 						sceKernelSuspendThread(thread_buf_now[thread_select+thread_scroll]);
 					}
 					else{
-						sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread, thread_buf_now, MAX_THREAD, &thread_count_now);
 						sceKernelResumeThread(thread_buf_now[thread_select+thread_scroll]);
 					}
 					//flip the marker
@@ -1276,8 +1384,8 @@ void MenuControls(){
 					sceKernelDelayThread(T_SECOND/2);
 				}
 
-				//up down
 				if(input.Buttons & PSP_CTRL_UP){
+					sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread, thread_buf_now, MAX_THREAD, &thread_count_now);
 					if(thread_select > 0){
 						thread_select--;
 					}
@@ -1291,6 +1399,7 @@ void MenuControls(){
 				}
 				
 				if(input.Buttons & PSP_CTRL_DOWN){
+					sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread, thread_buf_now, MAX_THREAD, &thread_count_now);
 					if((thread_select < thread_count_now-1) && (thread_select < THREAD_DISPLAY_LINES-1)){
 						thread_select++;
 					}
@@ -1302,9 +1411,9 @@ void MenuControls(){
 					MenuUpdate();
 					sceKernelDelayThread(T_SECOND/10);
 				}
-				
-				//left right
+			
 				if(input.Buttons & PSP_CTRL_LEFT){
+					sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread, thread_buf_now, MAX_THREAD, &thread_count_now);
 					if(thread_select > 0){
 						thread_select--;
 					}
@@ -1318,6 +1427,7 @@ void MenuControls(){
 				}
 				
 				if(input.Buttons & PSP_CTRL_RIGHT){
+					sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread, thread_buf_now, MAX_THREAD, &thread_count_now);
 					if((thread_select < thread_count_now-1) && (thread_select < THREAD_DISPLAY_LINES-1)){
 						thread_select++;
 					}
@@ -1329,7 +1439,7 @@ void MenuControls(){
 					MenuUpdate();
 					sceKernelDelayThread(T_SECOND/120);
 				}
-				
+
 				//select and open info menu
 				if(input.Buttons & PSP_CTRL_START){
 					menudepth = 1;
@@ -1416,7 +1526,7 @@ void MenuControls(){
 		//browser
 		else if(menutab == 2){
 
-			if(input.Buttons & PSP_CTRL_SELECT){
+			if(input.Buttons & PSP_CTRL_TRIANGLE){
 				
 				add_to_patches(DecodeAddress+(DecodeY*0x04), *(unsigned int*)(DecodeAddress+(DecodeY*0x04)));
 				//add_to_patches(0x08800000, 0xFFFFFFFF);
@@ -1425,7 +1535,7 @@ void MenuControls(){
 				sceKernelDelayThread(T_SECOND/5);
 			}
 
-			if(input.Buttons & PSP_CTRL_TRIANGLE){
+			if(input.Buttons & PSP_CTRL_SELECT){
 				//go to kernel memory
 				if(RamViewMode == 0){
 					RamViewMode = 1;
@@ -1696,8 +1806,8 @@ void MenuControls(){
 			}
 		
 			if(input.Buttons & PSP_CTRL_SELECT){
-				if(!patchEnable) patchEnable = 1;
-				else patchEnable = 0;
+				if(!patch_enable) patch_enable = 1;
+				else patch_enable = 0;
 				MenuUpdate();
 				sceKernelDelayThread(T_SECOND/5);
 			}
@@ -1755,7 +1865,7 @@ int mainThread(){
 	sceCtrlSetSamplingMode(PSP_CTRL_MODE_ANALOG);
   
 	//Register the button callbacks 
-	sceCtrlRegisterButtonCallback(1,  MenuEnableKey, ButtonCallback, NULL);
+	sceCtrlRegisterButtonCallback(2, PatchEnableKey | MenuEnableKey, ButtonCallback, NULL);
 
 	while(running){
 		
