@@ -1,6 +1,7 @@
 a kernel mode plugin for tracing module / thread information and chasing down NIDS on sony psp 
 
 How to use:
+
 	Add the line ms0:/seplugins/nidPR.prx 1 to your seplugins/game.txt
 	
 	To open the plugin you must open and close the home menu once, 
