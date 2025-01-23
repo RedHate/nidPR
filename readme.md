@@ -16,5 +16,6 @@ How to use:
 	Start will display extra information in the various lists.
 	
 Note:
-	when brute forcing nids with the debug keyboard, if you get a hit it will notify you on the bottom
+	
+ 	when brute forcing nids with the debug keyboard, if you get a hit it will notify you on the bottom
 	portion of the screen with a message, the prototypename and the nid value.
