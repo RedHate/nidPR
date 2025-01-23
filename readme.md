@@ -11,9 +11,9 @@ How to use:
 	currently working). It also opens the keyboard when you're in the 
 	stub viewer portion of the module list.
 	
-	Cross will take you to the entry point of a thread and will take you into sub menus for modules.
+	Cross will pause and unpause a thread and will take you into sub menus for modules.
 	
-	Start will display extra information on the various menus.
+	Start will display extra information in the various lists.
 	
 Note:
 	when brute forcing nids with the debug keyboard, if you get a hit it will notify you on the bottom
