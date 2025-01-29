@@ -1,14 +1,14 @@
-#define RED                     0xFF0000FF
-#define GREEN                   0xFF00FF00
-#define BLUE                    0xFFFF0000
-#define YELLOW                  0xFF00FFFF
-#define MAGENTA                 0xFFFF00FF
-#define CYAN                    0xFFFFFF00
-#define WHITE                   0xFFFFFFFF
-#define GRAY                    0xFFCCCCCC
-#define DARKGRAY                0xFF888888
-#define DARKERGRAY              0xFF444444
-#define BLACK                   0xFF000000
+#define RED                     0x880000FF
+#define GREEN                   0x8800FF00
+#define BLUE                    0x88FF0000
+#define YELLOW                  0x8800FFFF
+#define MAGENTA                 0x88FF00FF
+#define CYAN                    0x88FFFF00
+#define WHITE                   0x88FFFFFF
+#define GRAY                    0x88CCCCCC
+#define DARKGRAY                0x88888888
+#define DARKERGRAY              0x88444444
+#define BLACK                   0x88000000
 #define NOCOLOR                 0
 
 #define ALPHA_RED               0xCC0000FF

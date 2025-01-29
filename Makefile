@@ -23,7 +23,6 @@ LDFLAGS = -nostdlib -nodefaultlibs -g
 PSPSDK=$(shell psp-config --pspsdk-path)
 include $(PSPSDK)/lib/build.mak
 
-
 copy:
 	make clean
 	make
